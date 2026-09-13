@@ -458,6 +458,8 @@
     <string name="typing_settings_title">Typing preferences</string>
     <string name="typing_settings_suggest_emojis">Emoji Suggestions</string>
     <string name="typing_settings_suggest_emojis_subtitle">Suggest emojis while you\'re typing</string>
+    <string name="typing_settings_emoji_bar">Emoji bar</string>
+    <string name="typing_settings_emoji_bar_subtitle">Replace word predictions with related emojis and your pinned actions. Emojis follow the word you\'re typing or the emoji you just used.</string>
     <string name="typing_settings_vibration_strength">Vibration</string>
     <string name="typing_settings_vibration_strength_default">Default</string>
     <string name="typing_settings_keypress_sound_volume">Sound Volume</string>

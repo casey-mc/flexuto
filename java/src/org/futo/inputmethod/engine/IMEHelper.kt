@@ -11,6 +11,7 @@ import org.futo.inputmethod.keyboard.KeyboardSwitcher
 import org.futo.inputmethod.latin.LatinIME
 import org.futo.inputmethod.latin.SuggestedWords
 import org.futo.inputmethod.latin.suggestions.CorrectionRow
+import org.futo.inputmethod.latin.uix.EmojiBarContext
 import org.futo.inputmethod.latin.settings.Settings
 import org.futo.inputmethod.latin.uix.FloatingPreEdit
 
@@ -89,6 +90,10 @@ class IMEHelper(
 
     fun showCorrectionRow(row: CorrectionRow?) {
         latinIME.uixManager.setCorrectionRow(row)
+    }
+
+    fun showEmojiBarContext(context: EmojiBarContext?) {
+        latinIME.uixManager.setEmojiBarContext(context)
     }
 
     fun showSuggestionStrip(suggestedWords: SuggestedWords?, cfg: ExpandableSuggestionBarConfiguration = NonExpandableSuggestionBar) {

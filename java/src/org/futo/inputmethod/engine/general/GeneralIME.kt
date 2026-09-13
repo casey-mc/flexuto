@@ -43,6 +43,7 @@ import org.futo.inputmethod.latin.inputlogic.InputLogic
 import org.futo.inputmethod.latin.settings.Settings
 import org.futo.inputmethod.latin.suggestions.SuggestionStripViewAccessor
 import org.futo.inputmethod.keyboard.KeyboardActionListener
+import org.futo.inputmethod.latin.uix.EmojiBarContext
 import org.futo.inputmethod.latin.uix.SettingsKey
 import org.futo.inputmethod.latin.uix.actions.throwIfDebug
 import org.futo.inputmethod.latin.uix.getSetting
@@ -804,6 +805,10 @@ class GeneralIME(val helper: IMEHelper) : IMEInterface, WordLearner, SuggestionS
         }
     }
 
+    /**
+     * Refreshes the Fleksy correction row and the emoji bar context. Called whenever the
+     * suggestion strip would have been updated.
+     */
     private fun refreshCorrectionRow() {
         val update = {
             val current = settings.current
@@ -813,6 +818,7 @@ class GeneralIME(val helper: IMEHelper) : IMEInterface, WordLearner, SuggestionS
                 null
             }
             helper.showCorrectionRow(row)
+            helper.showEmojiBarContext(computeEmojiBarContext())
         }
 
         if(Looper.myLooper() == Looper.getMainLooper()) {
@@ -820,6 +826,21 @@ class GeneralIME(val helper: IMEHelper) : IMEInterface, WordLearner, SuggestionS
         } else {
             helper.lifecycleScope.launch(Dispatchers.Main) { update() }
         }
+    }
+
+    private fun computeEmojiBarContext(): EmojiBarContext? = try {
+        if(inputLogic.mWordComposer.isComposingWord) {
+            EmojiBarContext(composingWord = inputLogic.mWordComposer.typedWord, textBeforeCursor = "")
+        } else if(inputLogic.mConnection.hasSelection()) {
+            null
+        } else {
+            EmojiBarContext(
+                composingWord = "",
+                textBeforeCursor = inputLogic.mConnection.getTextBeforeCursor(48, 0)?.toString() ?: ""
+            )
+        }
+    } catch(e: Exception) {
+        null
     }
 
     override fun clearUserHistoryDictionaries() {

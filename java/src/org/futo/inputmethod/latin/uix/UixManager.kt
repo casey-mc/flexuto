@@ -599,6 +599,7 @@ class UixManager(private val latinIME: LatinIME) {
     private val shouldShowSuggestionStrip = mutableStateOf(true)
     private val suggestedWords: MutableState<SuggestedWords?> = mutableStateOf(null)
     private val correctionRow: MutableState<CorrectionRow?> = mutableStateOf(null)
+    private val emojiBarContext: MutableState<EmojiBarContext?> = mutableStateOf(null)
     private val expandableSuggestionCfg: MutableState<ExpandableSuggestionBarConfiguration> = mutableStateOf(
         NonExpandableSuggestionBar
     )
@@ -726,6 +727,7 @@ class UixManager(private val latinIME: LatinIME) {
                     suggestionStripListener,
                     correctionRow = if(shouldShowSuggestionStrip.value) correctionRow.value else null,
                     showCorrectionRow = fleksySwipesEnabled,
+                    emojiBarContext = if(shouldShowSuggestionStrip.value) emojiBarContext.value else null,
                     inlineSuggestions = inlineSuggestions,
                     onActionActivated = {
                         keyboardManagerForAction.performHapticAndAudioFeedback(
@@ -1478,6 +1480,10 @@ class UixManager(private val latinIME: LatinIME) {
 
     fun setCorrectionRow(row: CorrectionRow?) {
         this.correctionRow.value = row
+    }
+
+    fun setEmojiBarContext(context: EmojiBarContext?) {
+        this.emojiBarContext.value = context
     }
 
     fun setSuggestions(suggestedWords: SuggestedWords?, rtlSubtype: Boolean, cfg: ExpandableSuggestionBarConfiguration) {

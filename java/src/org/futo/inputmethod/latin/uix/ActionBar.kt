@@ -110,6 +110,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.net.toUri
 import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.runtime.setValue
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.futo.inputmethod.latin.Suggest
+import org.futo.inputmethod.latin.uix.EmojiTracker.useEmoji
+import org.futo.inputmethod.latin.uix.actions.LastUsedSkinTone
+import java.util.Locale
 import androidx.datastore.preferences.core.intPreferencesKey
 import org.futo.inputmethod.engine.ExpandableSuggestionBarConfiguration
 import org.futo.inputmethod.latin.DisplayTop4Setting
@@ -192,6 +202,12 @@ val ActionBarExpanded = SettingsKey(
 val OldStyleActionsBar = SettingsKey(
     booleanPreferencesKey("oldActionBar"),
     false
+)
+
+/** Replace word predictions with related emojis plus the pinned actions. */
+val EmojiActionBar = SettingsKey(
+    booleanPreferencesKey("emojiActionBar"),
+    true
 )
 
 
@@ -872,6 +888,142 @@ fun ActionSep(isExtra: Boolean = false) {
         .background(sepCol)) {}
 }
 
+private val EmojiBarSampleEmojis = listOf(
+    "\uD83D\uDE02", "\u2764\uFE0F", "\uD83D\uDE0D", "\uD83D\uDD25", "\uD83D\uDC4D", "\uD83D\uDE4F"
+)
+
+private const val EmojiBarActionWidth = 42
+private const val EmojiBarSlotWidth = 44
+
+@Composable
+fun RowScope.EmojiBarItem(emoji: String?, onClick: () -> Unit) {
+    val compatTypeface = LocalCompatEmojiTypeface.current
+    val compatFamily = LocalCompatEmojiFamily.current
+    val font = remember(emoji) {
+        if(emoji != null && emojiNeedsCompat(emoji, compatTypeface)) compatFamily else null
+    }
+    val textStyle = suggestionStylePrimary.copy(
+        color = LocalKeyboardScheme.current.onSurface,
+        fontSize = 22.sp,
+        lineHeight = 28.sp,
+        letterSpacing = 0.sp
+    ).withCustomFont(font)
+
+    Box(
+        modifier = Modifier
+            .weight(1.0f)
+            .fillMaxHeight()
+            .clickable(enabled = emoji != null, onClick = onClick)
+            .testTag("EmojiBarItem"),
+        contentAlignment = Center
+    ) {
+        if(emoji != null) {
+            Text(emoji, style = textStyle, maxLines = 1, softWrap = false)
+        }
+    }
+}
+
+/**
+ * [count] emoji slots for the emoji action bar. The list is recomputed off the main thread
+ * whenever the editor context, the slot count or the chosen skin tone changes.
+ */
+@Composable
+fun RowScope.EmojiBarItems(
+    context: EmojiBarContext?,
+    count: Int,
+    keyboardManagerForAction: KeyboardManagerForAction?,
+    onPick: (String) -> Unit
+) {
+    val isInspection = LocalInspectionMode.current
+    val appContext = LocalContext.current.applicationContext
+    val skinTone = if(isInspection) "" else useDataStoreValue(LastUsedSkinTone)
+    val locale = remember(keyboardManagerForAction) {
+        keyboardManagerForAction?.getActiveLocales()?.firstOrNull() ?: Locale.getDefault()
+    }
+
+    var emojis by remember {
+        mutableStateOf(if(isInspection) EmojiBarSampleEmojis else emptyList())
+    }
+    if(!isInspection) {
+        LaunchedEffect(context, count, skinTone, locale) {
+            emojis = withContext(Dispatchers.Default) {
+                EmojiRecommender.suggest(appContext, context, locale, count)
+            }
+        }
+    }
+
+    repeat(count) { i ->
+        val emoji = emojis.getOrNull(i)
+        EmojiBarItem(emoji) { if(emoji != null) onPick(emoji) }
+    }
+}
+
+/**
+ * The emoji bar: related emojis on the left, pinned actions on the right. Pinned actions take
+ * their natural width up to half the bar and scroll if there are more; emojis fill the rest.
+ */
+@Composable
+fun RowScope.EmojiActionBarContents(
+    context: EmojiBarContext?,
+    suggestionStripListener: SuggestionStripViewListener,
+    keyboardManagerForAction: KeyboardManagerForAction?,
+    onActionActivated: (Action) -> Unit,
+    onActionAltActivated: (Action) -> Unit,
+) {
+    val view = LocalView.current
+    val actions = if(!LocalInspectionMode.current) {
+        useDataStoreValue(PinnedActions)
+    } else {
+        PinnedActions.default
+    }
+    val actionItems = remember(actions) { actions.toActionList() }
+
+    val onPick: (String) -> Unit = { emoji: String ->
+        if(context != null && context.composingWord.isNotEmpty()) {
+            // Replaces the word being typed, like the old emoji suggestion did
+            suggestionStripListener.pickSuggestionManually(
+                SuggestedWordInfo(
+                    emoji,
+                    "",
+                    Suggest.SUPPRESS_SUGGEST_THRESHOLD + 1,
+                    SuggestedWordInfo.KIND_EMOJI_SUGGESTION,
+                    null,
+                    SuggestedWordInfo.NOT_AN_INDEX,
+                    SuggestedWordInfo.NOT_A_CONFIDENCE
+                )
+            )
+        } else if(keyboardManagerForAction != null) {
+            keyboardManagerForAction.typeText(emoji)
+            keyboardManagerForAction.getLifecycleScope().launch {
+                keyboardManagerForAction.getContext().useEmoji(emoji)
+            }
+        }
+        keyboardManagerForAction?.performHapticAndAudioFeedback(Constants.CODE_EMOJI, view)
+        Unit
+    }
+
+    BoxWithConstraints(Modifier.weight(1.0f).fillMaxHeight()) {
+        val maxActionsWidth = maxWidth / 2
+        val naturalActionsWidth = EmojiBarActionWidth.dp * actionItems.size
+        val actionsWidth = if(naturalActionsWidth > maxActionsWidth) maxActionsWidth else naturalActionsWidth
+        val count = ((maxWidth - actionsWidth) / EmojiBarSlotWidth.dp).toInt().coerceAtLeast(1)
+
+        Row(Modifier.fillMaxSize()) {
+            EmojiBarItems(context, count, keyboardManagerForAction, onPick)
+            Row(
+                Modifier
+                    .width(actionsWidth)
+                    .fillMaxHeight()
+                    .horizontalScroll(rememberScrollState())
+            ) {
+                actionItems.forEach {
+                    ActionItemSmall(it, onActionActivated, onActionAltActivated)
+                }
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun ActionBar(
@@ -890,11 +1042,13 @@ fun ActionBar(
     loading: Boolean = false,
     correctionRow: CorrectionRow? = null,
     showCorrectionRow: Boolean = false,
+    emojiBarContext: EmojiBarContext? = null,
 ) {
     val view = LocalView.current
     val context = LocalContext.current
 
     val oldActionBar = useDataStore(OldStyleActionsBar)
+    val emojiBar = useDataStore(EmojiActionBar)
 
     val useDoubleHeight = isActionsExpanded && oldActionBar.value == false
     val correctionRowShown = showCorrectionRow && !needToUseExpandableSuggestionUi
@@ -967,6 +1121,14 @@ fun ActionBar(
                             InlineSuggestions(inlineSuggestions)
                         } else if(quickClipState != null) {
                             QuickClipView(quickClipState, onQuickClipDismiss)
+                        } else if(emojiBar.value) {
+                            EmojiActionBarContents(
+                                emojiBarContext,
+                                suggestionStripListener,
+                                keyboardManagerForAction,
+                                onActionActivated,
+                                onActionAltActivated
+                            )
                         } else if (words != null) {
                             SuggestionItems(
                                 words,
@@ -988,7 +1150,7 @@ fun ActionBar(
                             Spacer(modifier = Modifier.weight(1.0f))
                         }
 
-                        if(inlineSuggestions.isEmpty()) {
+                        if(inlineSuggestions.isEmpty() && !emojiBar.value) {
                             PinnedActionItems(onActionActivated, onActionAltActivated)
                         }
                     }

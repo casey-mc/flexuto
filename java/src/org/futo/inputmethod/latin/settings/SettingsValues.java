@@ -85,6 +85,8 @@ public class SettingsValues {
     public final boolean mBigramPredictionEnabled;
     public final boolean mTransformerPredictionEnabled;
     public final boolean mGestureInputEnabled;
+    // Fleksy-style swipes on letter keys (delete word, insert space, cycle corrections)
+    public final boolean mFleksySwipesEnabled;
     public final boolean mGestureInputSensitive;
     public final boolean mGestureTrailEnabled;
     public final boolean mGestureFloatingPreviewTextEnabled;
@@ -232,6 +234,7 @@ public class SettingsValues {
                 autoCorrectionThresholdRawValue);
         mPlausibilityThreshold = Settings.readPlausibilityThreshold(res);
         mGestureInputEnabled = Settings.readGestureInputEnabled(prefs, res);
+        mFleksySwipesEnabled = Settings.readFleksySwipesEnabled(prefs);
         mGestureInputSensitive = prefs.getBoolean(Settings.PREF_GESTURE_INPUT_SENSITIVITY, false);
         mGestureTrailEnabled = prefs.getBoolean(Settings.PREF_GESTURE_PREVIEW_TRAIL, true);
         mCloudSyncEnabled = prefs.getBoolean(LocalSettingsConstants.PREF_ENABLE_CLOUD_SYNC, false);

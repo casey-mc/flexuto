@@ -24,6 +24,7 @@ import kotlinx.serialization.encoding.encodeStructure
 import kotlinx.serialization.json.Json
 import org.futo.inputmethod.latin.FoldStateProvider
 import org.futo.inputmethod.latin.LatinIME
+import org.futo.inputmethod.latin.settings.Settings
 import org.futo.inputmethod.latin.settings.SettingsValues
 import org.futo.inputmethod.latin.uix.OldStyleActionsBar
 import org.futo.inputmethod.latin.uix.SettingsKey
@@ -588,11 +589,21 @@ class KeyboardSizingCalculator(val context: Context, val uixManager: UixManager)
         return 40.0f
     }
 
+    /** Height of the Fleksy correction row under the suggestion strip, 0 when it is not shown. */
+    fun calculateCorrectionRowHeightDp(): Float =
+        if(uixManager.currWindowActionWindow == null
+            && Settings.getInstance().current?.mFleksySwipesEnabled == true) {
+            28.0f
+        } else {
+            0.0f
+        }
+
     fun calculateTotalActionBarHeightPx(): Int =
         when {
             uixManager.actionsExpanded
                     && (uixManager.currWindowActionWindow == null)
-                    && (context.getSetting(OldStyleActionsBar) == false) -> dp(2 * calculateSuggestionBarHeightDp())
-            else -> dp(calculateSuggestionBarHeightDp())
+                    && (context.getSetting(OldStyleActionsBar) == false) ->
+                dp(2 * calculateSuggestionBarHeightDp() + calculateCorrectionRowHeightDp())
+            else -> dp(calculateSuggestionBarHeightDp() + calculateCorrectionRowHeightDp())
         }
 }

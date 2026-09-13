@@ -101,6 +101,8 @@ public final class PointerTracker implements PointerTrackerQueue.Element,
             (int)(64.0 * Resources.getSystem().getDisplayMetrics().density),
             Resources.getSystem().getDisplayMetrics().widthPixels * 3 / 2
     );
+    // Fleksy-style swipes: distance before a touch on a key is treated as a swipe.
+    private static final int sFleksySwipeThreshold = (int)(24.0 * Resources.getSystem().getDisplayMetrics().density);
 
     private static GestureStrokeRecognitionParams sGestureStrokeRecognitionParams;
     private static GestureStrokeDrawingParams sGestureStrokeDrawingParams;
@@ -151,6 +153,15 @@ public final class PointerTracker implements PointerTrackerQueue.Element,
     private Direction mFlickDirection;
 
     private boolean mIsSlidingCursor;
+    // Fleksy-style swipe state. A pointer that goes down on a regular (text) key is a candidate;
+    // once it moves past the threshold the swipe claims the pointer and the key is not typed.
+    private boolean mIsFleksyCandidate = false;
+    private static final int FLEKSY_AXIS_NONE = 0;
+    private static final int FLEKSY_AXIS_HORIZONTAL = 1;
+    private static final int FLEKSY_AXIS_VERTICAL = 2;
+    private int mFleksyAxis = FLEKSY_AXIS_NONE;
+    // Set once a swipe up on the space bar has fired, so the rest of the drag is ignored.
+    private boolean mSpacebarSwipeUpConsumed = false;
     private int mStartX;
     private int mStartY;
     private long mStartTime;
@@ -765,6 +776,12 @@ public final class PointerTracker implements PointerTrackerQueue.Element,
             mIsSlidingCursor = key.getCode() == Constants.CODE_DELETE || key.getCode() == Constants.CODE_SPACE;
             mIsFlickingKey = !mIsSlidingCursor && key.getHasFlick();
             mFlickDirection = key.flickDirection(0, 0);
+            mFleksyAxis = FLEKSY_AXIS_NONE;
+            mSpacebarSwipeUpConsumed = false;
+            mIsFleksyCandidate = !mIsSlidingCursor && !mIsFlickingKey && !key.isModifier()
+                    && (key.getCode() > Constants.CODE_SPACE || key.getCode() == Constants.CODE_OUTPUT_TEXT)
+                    && Settings.getInstance().getCurrent() != null
+                    && Settings.getInstance().getCurrent().mFleksySwipesEnabled;
             mCurrentKey = key;
         }
     }
@@ -971,6 +988,33 @@ public final class PointerTracker implements PointerTrackerQueue.Element,
         final SettingsValues settingsValues = Settings.getInstance().getCurrent();
 
         if (!sInGesture && mIsSlidingCursor && oldKey != null && oldKey.getCode() == Constants.CODE_SPACE) {
+            if (mSpacebarSwipeUpConsumed) {
+                mLastX = x;
+                mLastY = y;
+                return;
+            }
+
+            // Swipe up on the space bar selects all text. Only before any horizontal cursor
+            // movement has started, and not when the language swipe is configured vertically.
+            final boolean languageSwipeIsVertical =
+                    settingsValues.mSpacebarSwipeMode == Settings.SPACEBAR_MODE_LANGUAGE
+                            && oldKey.getUseVerticalSwipe();
+            if (!mSpacebarLongPressed && !mCursorMoved && !languageSwipeIsVertical
+                    && settingsValues.mFleksySwipesEnabled) {
+                final int dx = x - mStartX;
+                final int dy = mStartY - y;
+                if (dy >= sFleksySwipeThreshold && dy > Math.abs(dx)) {
+                    sTimerProxy.cancelKeyTimersOf(this);
+                    mCursorMoved = true;
+                    mSpacebarSwipeUpConsumed = true;
+                    setReleasedKeyGraphics(oldKey, true /* withAnimation */);
+                    sListener.onFleksySwipe(KeyboardActionListener.FLEKSY_SWIPE_SPACE_UP);
+                    mLastX = x;
+                    mLastY = y;
+                    return;
+                }
+            }
+
             boolean allowedBySettings = (mSpacebarLongPressed && settingsValues.mSpacebarHoldMode == Settings.SPACEBAR_MODE_CURSOR)
                         || (!mSpacebarLongPressed && settingsValues.mSpacebarSwipeMode != Settings.SPACEBAR_MODE_OFF);
 
@@ -1008,10 +1052,9 @@ public final class PointerTracker implements PointerTrackerQueue.Element,
 
         if (!sInGesture && mIsSlidingCursor && oldKey != null && oldKey.getCode() == Constants.CODE_DELETE
                 && settingsValues.mBackspaceMode != Settings.BACKSPACE_MODE_OFF) {
+            // One word (or one character) per step. Words use the same step size as
+            // characters so a swipe covers a lot of text.
             int pointerStep = sPointerStep;
-            if(settingsValues.mBackspaceMode == Settings.BACKSPACE_MODE_WORDS) {
-                pointerStep = sPointerBigStep;
-            }
 
             int steps = (x - mStartX) / pointerStep;
             if (steps != 0) {
@@ -1024,6 +1067,14 @@ public final class PointerTracker implements PointerTrackerQueue.Element,
                 sListener.onMoveDeletePointer(steps);
             }
 
+            mLastX = x;
+            mLastY = y;
+            return;
+        }
+
+        if (mIsFleksyCandidate && !sInGesture && oldKey != null
+                && !sGestureEnabler.shouldHandleGesture() && !isShowingMoreKeysPanel()) {
+            onFleksyMoveEvent(oldKey, x, y);
             mLastX = x;
             mLastY = y;
             return;
@@ -1109,6 +1160,40 @@ public final class PointerTracker implements PointerTrackerQueue.Element,
         cancelTrackingForAction();
     }
 
+    /**
+     * Handles pointer movement for a Fleksy-style swipe candidate. While the movement is below
+     * the threshold nothing happens (and the key stays pressed). Past the threshold the dominant
+     * axis is chosen and the swipe fires exactly once; the rest of the drag is ignored.
+     */
+    private void onFleksyMoveEvent(final Key key, final int x, final int y) {
+        final int dx = x - mStartX;
+        final int dy = y - mStartY;
+        if (mFleksyAxis == FLEKSY_AXIS_NONE) {
+            final int absDx = Math.abs(dx);
+            final int absDy = Math.abs(dy);
+            if (absDx >= sFleksySwipeThreshold && absDx >= absDy) {
+                mFleksyAxis = FLEKSY_AXIS_HORIZONTAL;
+                claimFleksySwipe(key);
+                sListener.onFleksySwipe(dx < 0
+                        ? KeyboardActionListener.FLEKSY_SWIPE_LEFT
+                        : KeyboardActionListener.FLEKSY_SWIPE_RIGHT);
+            } else if (absDy >= sFleksySwipeThreshold && absDy > absDx) {
+                mFleksyAxis = FLEKSY_AXIS_VERTICAL;
+                claimFleksySwipe(key);
+                sListener.onFleksySwipe(dy < 0
+                        ? KeyboardActionListener.FLEKSY_SWIPE_UP
+                        : KeyboardActionListener.FLEKSY_SWIPE_DOWN);
+            }
+        }
+    }
+
+    private void claimFleksySwipe(final Key key) {
+        sTimerProxy.cancelKeyTimersOf(this);
+        // Reuse the sliding-cursor mechanism so the key is not typed on release.
+        mCursorMoved = true;
+        setReleasedKeyGraphics(key, true /* withAnimation */);
+    }
+
     private void onUpEventInternal(final int x, final int y, final long eventTime) {
         // Update the key if the layout has changed
         if(mKeyboardLayoutHasBeenChanged
@@ -1142,7 +1227,13 @@ public final class PointerTracker implements PointerTrackerQueue.Element,
             sListener.onSwipeLanguageReleased();
             mProgressReported = false;
         }
-        if(mCursorMoved && currentKey != null && currentKey.getCode() == Constants.CODE_DELETE) {
+        final boolean wasFleksySwipe = mFleksyAxis != FLEKSY_AXIS_NONE || mSpacebarSwipeUpConsumed;
+        mIsFleksyCandidate = false;
+        mFleksyAxis = FLEKSY_AXIS_NONE;
+        mSpacebarSwipeUpConsumed = false;
+        if(mCursorMoved && wasFleksySwipe) {
+            // Nothing to do on release, the swipe already took effect.
+        } else if(mCursorMoved && currentKey != null && currentKey.getCode() == Constants.CODE_DELETE) {
             sListener.onUpWithDeletePointerActive();
         } else if(mCursorMoved) {
             sListener.onUpWithPointerActive();

@@ -10,6 +10,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Box
@@ -119,6 +120,7 @@ import org.futo.inputmethod.latin.SuggestedWords.SuggestedWordInfo.KIND_EMOJI_SU
 import org.futo.inputmethod.latin.SuggestedWords.SuggestedWordInfo.KIND_TYPED
 import org.futo.inputmethod.latin.SuggestionBlacklist
 import org.futo.inputmethod.latin.common.Constants
+import org.futo.inputmethod.latin.suggestions.CorrectionRow
 import org.futo.inputmethod.latin.suggestions.SuggestionStripViewListener
 import org.futo.inputmethod.latin.uix.actions.FavoriteActions
 import org.futo.inputmethod.latin.uix.actions.MoreActionsAction
@@ -169,6 +171,9 @@ import kotlin.math.roundToInt
 
 val ActionBarHeight = 40.dp
 
+/** Height of the Fleksy-style correction row shown under the suggestion strip. */
+val CorrectionRowHeight = 28.dp
+
 val ActionBarScrollIndexSetting = SettingsKey(
     intPreferencesKey("action_bar_scroll_index"),
     0
@@ -213,6 +218,18 @@ val suggestionStyleAlternative = TextStyle(
     lineHeight = 26.sp,
     letterSpacing = 0.5.sp,
     //textAlign = TextAlign.Center
+)
+
+val correctionRowStylePrimary = TextStyle(
+    fontFamily = FontFamily.SansSerif,
+    fontWeight = FontWeight.Medium,
+    fontSize = 14.sp,
+    lineHeight = 18.sp,
+    letterSpacing = 0.3.sp,
+)
+
+val correctionRowStyleAlternative = correctionRowStylePrimary.copy(
+    fontWeight = FontWeight.Normal
 )
 
 val suggestionStyleCandidateDescription = TextStyle(
@@ -369,6 +386,52 @@ fun RowScope.SuggestionItem(words: SuggestedWords, idx: Int, isPrimary: Boolean,
             }
         }
     }
+}
+
+@Composable
+fun RowScope.CorrectionRowItem(word: String?, isSelected: Boolean, onClick: () -> Unit) {
+    val color = when(isSelected) {
+        true -> LocalKeyboardScheme.current.onSurface
+        else -> LocalKeyboardScheme.current.onSurfaceVariant
+    }
+    val textStyle = when(isSelected) {
+        true -> correctionRowStylePrimary
+        false -> correctionRowStyleAlternative
+    }.copy(color = color)
+
+    Box(
+        modifier = Modifier
+            .weight(1.0f)
+            .fillMaxHeight()
+            .clickable(enabled = word != null && !isSelected, onClick = onClick)
+            .testTag("CorrectionRowItem"),
+    ) {
+        if(word != null) {
+            AutoFitText(
+                word,
+                style = textStyle,
+                modifier = Modifier
+                    .align(Center)
+                    .padding(horizontal = 4.dp, vertical = 1.dp)
+            )
+        }
+    }
+}
+
+/**
+ * Three cells centered on the selected candidate: the previous candidate (empty at index 0),
+ * the candidate currently in the editor, and the next one.
+ */
+@Composable
+fun RowScope.CorrectionRowItems(row: CorrectionRow?, onPick: (Int) -> Unit) {
+    val index = row?.index ?: 0
+    val candidate = { i: Int -> row?.candidates?.getOrNull(i) }
+
+    CorrectionRowItem(candidate(index - 1), isSelected = false) { onPick(index - 1) }
+    SuggestionSeparator()
+    CorrectionRowItem(candidate(index), isSelected = true) { }
+    SuggestionSeparator()
+    CorrectionRowItem(candidate(index + 1), isSelected = false) { onPick(index + 1) }
 }
 
 @Composable fun RowScope.SuggestionSeparator() {
@@ -825,6 +888,8 @@ fun ActionBar(
     onQuickClipDismiss: () -> Unit = {},
     needToUseExpandableSuggestionUi: Boolean = false,
     loading: Boolean = false,
+    correctionRow: CorrectionRow? = null,
+    showCorrectionRow: Boolean = false,
 ) {
     val view = LocalView.current
     val context = LocalContext.current
@@ -832,6 +897,7 @@ fun ActionBar(
     val oldActionBar = useDataStore(OldStyleActionsBar)
 
     val useDoubleHeight = isActionsExpanded && oldActionBar.value == false
+    val correctionRowShown = showCorrectionRow && !needToUseExpandableSuggestionUi
 
     Column(Modifier
         .height(
@@ -841,7 +907,7 @@ fun ActionBar(
                 } else {
                     it
                 }
-            }
+            } + (if(correctionRowShown) CorrectionRowHeight else 0.dp)
         )
         .semantics {
             testTag = "ActionBar"
@@ -925,6 +991,24 @@ fun ActionBar(
                         if(inlineSuggestions.isEmpty()) {
                             PinnedActionItems(onActionActivated, onActionAltActivated)
                         }
+                    }
+                }
+            }
+        }
+
+        if(correctionRowShown) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(CorrectionRowHeight), color = actionBarColor()
+            ) {
+                Row(Modifier.safeKeyboardPadding()) {
+                    CorrectionRowItems(correctionRow) {
+                        suggestionStripListener.pickCorrectionCandidate(it)
+                        keyboardManagerForAction?.performHapticAndAudioFeedback(
+                            Constants.CODE_TAB,
+                            view
+                        )
                     }
                 }
             }

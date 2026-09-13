@@ -42,6 +42,7 @@ import org.futo.inputmethod.latin.common.InputPointers
 import org.futo.inputmethod.latin.inputlogic.InputLogic
 import org.futo.inputmethod.latin.settings.Settings
 import org.futo.inputmethod.latin.suggestions.SuggestionStripViewAccessor
+import org.futo.inputmethod.keyboard.KeyboardActionListener
 import org.futo.inputmethod.latin.uix.SettingsKey
 import org.futo.inputmethod.latin.uix.actions.throwIfDebug
 import org.futo.inputmethod.latin.uix.getSetting
@@ -748,6 +749,79 @@ class GeneralIME(val helper: IMEHelper) : IMEInterface, WordLearner, SuggestionS
         // GeneralIME does nothing
     }
 
+    override fun onFleksySwipe(direction: Int) {
+        helper.requestCursorUpdate()
+        when(direction) {
+            KeyboardActionListener.FLEKSY_SWIPE_LEFT -> {
+                inputLogic.fleksyDeleteWord(settings.current, helper.currentKeyboardScriptId)
+                helper.keyboardSwitcher.requestUpdatingShiftState(getCurrentAutoCapsState())
+                refreshCorrectionRow()
+            }
+            KeyboardActionListener.FLEKSY_SWIPE_RIGHT -> {
+                onEventInternal(
+                    Event.createSoftwareKeypressEvent(
+                        Constants.CODE_SPACE,
+                        Constants.CODE_SPACE,
+                        Constants.NOT_A_COORDINATE,
+                        Constants.NOT_A_COORDINATE,
+                        false
+                    )
+                )
+            }
+            KeyboardActionListener.FLEKSY_SWIPE_UP -> cycleCorrection(-1)
+            KeyboardActionListener.FLEKSY_SWIPE_DOWN -> cycleCorrection(1)
+            KeyboardActionListener.FLEKSY_SWIPE_SPACE_UP -> selectAll()
+        }
+    }
+
+    private fun selectAll() {
+        inputLogic.mConnection.finishComposingText()
+        inputLogic.mWordComposer.reset(true)
+        setNeutralSuggestionStrip()
+        helper.getCurrentInputConnection()?.performContextMenuAction(android.R.id.selectAll)
+    }
+
+    override fun onCorrectionRowPick(index: Int) {
+        helper.requestCursorUpdate()
+        applyCorrectionPick(inputLogic.applyCorrectionCandidate(settings.current, index))
+    }
+
+    private fun cycleCorrection(delta: Int) {
+        applyCorrectionPick(inputLogic.cycleCorrectionCandidate(settings.current, delta))
+    }
+
+    /**
+     * When the correction applies to a word still being composed, InputLogic hands back the
+     * suggestion to pick and we route it through the normal manual-pick path. Otherwise the
+     * replacement already happened and we only need to refresh the UI.
+     */
+    private fun applyCorrectionPick(info: SuggestedWordInfo?) {
+        if(info != null) {
+            onEventInternal(Event.createSuggestionPickedEvent(info))
+        } else {
+            helper.keyboardSwitcher.requestUpdatingShiftState(getCurrentAutoCapsState())
+            refreshCorrectionRow()
+        }
+    }
+
+    private fun refreshCorrectionRow() {
+        val update = {
+            val current = settings.current
+            val row = if(current.mFleksySwipesEnabled && current.isSuggestionsEnabledPerUserSettings) {
+                inputLogic.computeCorrectionRow(current)
+            } else {
+                null
+            }
+            helper.showCorrectionRow(row)
+        }
+
+        if(Looper.myLooper() == Looper.getMainLooper()) {
+            update()
+        } else {
+            helper.lifecycleScope.launch(Dispatchers.Main) { update() }
+        }
+    }
+
     override fun clearUserHistoryDictionaries() {
         dictionaryFacilitator.clearUserHistoryDictionary(context)
         resetDictionaryFacilitator(force = true)
@@ -779,6 +853,7 @@ class GeneralIME(val helper: IMEHelper) : IMEInterface, WordLearner, SuggestionS
     override fun setNeutralSuggestionStrip() {
         inputLogic.setSuggestedWords(SuggestedWords.getEmptyInstance())
         helper.setNeutralSuggestionStrip(expandableCfg)
+        refreshCorrectionRow()
     }
 
     override fun showSuggestionStrip(words: SuggestedWords?) {
@@ -789,6 +864,7 @@ class GeneralIME(val helper: IMEHelper) : IMEInterface, WordLearner, SuggestionS
         } else {
             helper.setNeutralSuggestionStrip(expandableCfg)
         }
+        refreshCorrectionRow()
     }
 
     fun debugInfo(): List<String> = buildList {

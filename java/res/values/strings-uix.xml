@@ -542,6 +542,9 @@
     <string name="swipe_settings_enable_swipe_typing">Enable swipe typing</string>
     <string name="swipe_settings_enable_swipe_typing_subtitle">Allow swiping from key to key to write words.</string>
 
+    <string name="swipe_settings_fleksy_swipes">Fleksy swipes</string>
+    <string name="swipe_settings_fleksy_swipes_subtitle">Swipe left on the keys to delete a word, right to insert a space, up and down to change the correction. Not available while swipe typing is enabled.</string>
+
     <string name="swipe_settings_sensitive_swipe">Increase sensitivity</string>
     <string name="swipe_settings_sensitive_swipe_subtitle">Make swipe trigger more often</string>
 

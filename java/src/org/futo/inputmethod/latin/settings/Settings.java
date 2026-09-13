@@ -89,6 +89,7 @@ public final class Settings implements SharedPreferences.OnSharedPreferenceChang
             "pref_key_preview_popup_dismiss_delay";
     public static final String PREF_BIGRAM_PREDICTIONS = "next_word_prediction";
     public static final String PREF_GESTURE_INPUT = "gesture_input";
+    public static final String PREF_FLEKSY_SWIPES = "fleksy_swipes";
     public static final String PREF_GESTURE_INPUT_SENSITIVITY = "gesture_input_sensitivity";
     public static final String PREF_VIBRATION_DURATION_SETTINGS =
             "pref_vibration_duration_settings";
@@ -307,7 +308,11 @@ public final class Settings implements SharedPreferences.OnSharedPreferenceChang
     public static boolean readGestureInputEnabled(final SharedPreferences prefs,
             final Resources res) {
         return readFromBuildConfigIfGestureInputEnabled(res)
-                && prefs.getBoolean(PREF_GESTURE_INPUT, true);
+                && prefs.getBoolean(PREF_GESTURE_INPUT, false);
+    }
+
+    public static boolean readFleksySwipesEnabled(final SharedPreferences prefs) {
+        return prefs.getBoolean(PREF_FLEKSY_SWIPES, true);
     }
 
     public static boolean readFromBuildConfigIfToShowKeyPreviewPopupOption(final Resources res) {

@@ -107,6 +107,19 @@ public interface KeyboardActionListener {
     public void onUpWithPointerActive();
     public void onMovingCursorLockEvent(boolean canMoveCursor);
 
+    public static final int FLEKSY_SWIPE_LEFT = 0;
+    public static final int FLEKSY_SWIPE_RIGHT = 1;
+    public static final int FLEKSY_SWIPE_UP = 2;
+    public static final int FLEKSY_SWIPE_DOWN = 3;
+    /** Swipe up on the space bar: select all text. */
+    public static final int FLEKSY_SWIPE_SPACE_UP = 4;
+
+    /**
+     * Called when the user performs a Fleksy-style swipe on a regular key, instead of a key press.
+     * @param direction one of the FLEKSY_SWIPE_* constants
+     */
+    public void onFleksySwipe(int direction);
+
     public static final KeyboardActionListener EMPTY_LISTENER = new Adapter();
 
     public void onSwipeLanguageProgress(float progress);
@@ -149,5 +162,7 @@ public interface KeyboardActionListener {
         public void onSwipeLanguageProgress(float progress) {}
         @Override
         public void onMovingCursorLockEvent(boolean canMoveCursor) {}
+        @Override
+        public void onFleksySwipe(int direction) {}
     }
 }

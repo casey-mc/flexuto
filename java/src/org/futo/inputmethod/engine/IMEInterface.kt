@@ -89,6 +89,12 @@ interface IMEInterface {
     fun onMovingCursorLockEvent(canMoveCursor: Boolean)
     fun clearUserHistoryDictionaries()
 
+    /** Fleksy-style swipe on a regular key. Direction is a KeyboardActionListener.FLEKSY_SWIPE_* value. */
+    fun onFleksySwipe(direction: Int) { }
+
+    /** User tapped an entry of the correction row (the secondary suggestion row). */
+    fun onCorrectionRowPick(index: Int) { }
+
     /** Refresh as a result of blacklist update */
     fun requestSuggestionRefresh()
 

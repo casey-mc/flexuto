@@ -692,6 +692,21 @@ public class LatinIMELegacy implements KeyboardActionListener,
         }
     }
 
+    @Override
+    public void onFleksySwipe(int direction) {
+        hapticAndAudioFeedback(Constants.CODE_UNSPECIFIED, 0);
+        mImeManager.getActiveIME(
+                mSettings.getCurrent()
+        ).onFleksySwipe(direction);
+    }
+
+    @Override
+    public void pickCorrectionCandidate(int index) {
+        mImeManager.getActiveIME(
+                mSettings.getCurrent()
+        ).onCorrectionRowPick(index);
+    }
+
     // TODO: Instead of checking for alphabetic keyboard here, separate keycodes for
     // alphabetic shift and shift while in symbol layout and get rid of this method.
     private int getCodePointForKeyboard(final int codePoint) {

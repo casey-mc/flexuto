@@ -35,6 +35,8 @@ import org.futo.inputmethod.event.InputTransaction;
 import org.futo.inputmethod.keyboard.Keyboard;
 import org.futo.inputmethod.keyboard.KeyboardSwitcher;
 import org.futo.inputmethod.latin.BinaryDictionary;
+import org.futo.inputmethod.latin.Dictionary;
+import org.futo.inputmethod.latin.suggestions.CorrectionRow;
 import org.futo.inputmethod.latin.DictionaryFacilitator;
 import org.futo.inputmethod.latin.LastComposedWord;
 import org.futo.inputmethod.latin.NgramContext;
@@ -139,6 +141,395 @@ public final class InputLogic {
     private void clearRememberedSuggestedWords() {
         synchronized(mRememberedSuggestedWords) {
             mRememberedSuggestedWords.clear();
+        }
+        mFocusedWord = null;
+    }
+
+    // ---- Fleksy-style correction row ----
+
+    /**
+     * The word the correction row operates on when no word is being composed: normally the word
+     * that was just committed (possibly autocorrected), or the punctuation mark before the cursor.
+     */
+    private static final class FocusedWord {
+        final ArrayList<String> candidates;
+        int index;
+        final boolean isPunctuation;
+
+        FocusedWord(ArrayList<String> candidates, int index, boolean isPunctuation) {
+            this.candidates = candidates;
+            this.index = index;
+            this.isPunctuation = isPunctuation;
+        }
+
+        String current() {
+            return candidates.get(index);
+        }
+
+        CorrectionRow toRow() {
+            return new CorrectionRow(new ArrayList<>(candidates), index);
+        }
+    }
+
+    /** Punctuation marks the row cycles through, in order. */
+    private static final String[] PUNCTUATION_CYCLE = { ".", ",", "?", "!", ";", ":" };
+
+    @Nullable
+    private FocusedWord mFocusedWord = null;
+
+    private static int indexOfPunctuation(final char c) {
+        for (int i = 0; i < PUNCTUATION_CYCLE.length; i++) {
+            if (PUNCTUATION_CYCLE[i].charAt(0) == c) return i;
+        }
+        return -1;
+    }
+
+    /**
+     * Finds the remembered suggestion list for the word at the given cursor position. Matches if
+     * the word is the typed word, the autocorrection, or any other suggestion in the list.
+     */
+    @Nullable
+    private RememberedSuggestedWords lookupRememberedEntry(final int cursor, final String word) {
+        synchronized(mRememberedSuggestedWords) {
+            for (Iterator<RememberedSuggestedWords> it = mRememberedSuggestedWords.descendingIterator(); it.hasNext(); ) {
+                final RememberedSuggestedWords candidate = it.next();
+                if (cursor > candidate.endPosition || cursor < candidate.startPosition) continue;
+                if (candidate.word.equals(word)) return candidate;
+                final SuggestedWordInfo typed = candidate.suggestions.mTypedWordInfo;
+                if (typed != null && typed.mWord.equals(word)) return candidate;
+                final SuggestedWordInfo ac = candidate.suggestions.getAutoCorrectCandidate();
+                if (ac != null && ac.mWord.equals(word)) return candidate;
+                for (final SuggestedWordInfo info : candidate.suggestions.mSuggestedWordInfoList) {
+                    if (info.mWord.equals(word)) return candidate;
+                }
+            }
+        }
+        return null;
+    }
+
+    private static boolean isCyclableCandidate(final SuggestedWordInfo info) {
+        final int kind = info.getKind();
+        if (kind == SuggestedWordInfo.KIND_UNDO || kind == SuggestedWordInfo.KIND_APP_DEFINED
+                || kind == SuggestedWordInfo.KIND_EMOJI_SUGGESTION) {
+            return false;
+        }
+        final String w = info.mWord;
+        if (TextUtils.isEmpty(w)) return false;
+        for (int i = 0; i < w.length(); i++) {
+            if (Character.isWhitespace(w.charAt(i))) return false;
+        }
+        return true;
+    }
+
+    /**
+     * Builds the candidate list for a word: the typed text first, then the autocorrection (if
+     * any and different), then the remaining suggestions in order.
+     *
+     * @param typedWord what the user typed
+     * @param suggestions the suggestions that were computed for the typed word
+     * @param currentWord the word currently in the editor, or null while still composing
+     */
+    private static FocusedWord buildFocusedWord(final String typedWord,
+            @Nullable final SuggestedWords suggestions, @Nullable final String currentWord) {
+        final ArrayList<String> candidates = new ArrayList<>();
+        candidates.add(typedWord);
+
+        String autoCorrection = null;
+        if (suggestions != null) {
+            final SuggestedWordInfo ac = suggestions.getAutoCorrectCandidate();
+            if (ac != null && isCyclableCandidate(ac) && !ac.mWord.equals(typedWord)) {
+                autoCorrection = ac.mWord;
+                candidates.add(autoCorrection);
+            }
+            for (final SuggestedWordInfo info : suggestions.mSuggestedWordInfoList) {
+                if (!isCyclableCandidate(info)) continue;
+                if (candidates.contains(info.mWord)) continue;
+                candidates.add(info.mWord);
+                if (candidates.size() >= 16) break;
+            }
+        }
+
+        int index;
+        if (currentWord == null) {
+            index = autoCorrection != null ? 1 : 0;
+        } else {
+            index = candidates.indexOf(currentWord);
+            if (index < 0) {
+                for (int i = 0; i < candidates.size(); i++) {
+                    if (candidates.get(i).equalsIgnoreCase(currentWord)) {
+                        index = i;
+                        break;
+                    }
+                }
+            }
+            if (index < 0) {
+                // The editor holds something we did not predict (e.g. a different capitalization
+                // from a manual pick). Treat it as the accepted word.
+                if (currentWord.equals(typedWord)) {
+                    index = 0;
+                } else {
+                    candidates.add(1, currentWord);
+                    index = 1;
+                }
+            }
+        }
+        return new FocusedWord(candidates, index, false);
+    }
+
+    /**
+     * Computes the correction row for the current editor state. While composing, it describes
+     * the composing word and what it will be committed as. Otherwise it describes the word (or
+     * punctuation mark) just before the cursor, skipping one trailing space.
+     *
+     * Must be called on the main thread when not composing, because it reads the editor text.
+     *
+     * @return the row to display, or null if there is nothing to show.
+     */
+    @Nullable
+    public CorrectionRow computeCorrectionRow(final SettingsValues settingsValues) {
+        if (mConnection.hasSelection()) return null;
+
+        if (mWordComposer.isComposingWord()) {
+            final String typed = mWordComposer.getTypedWord();
+            if (TextUtils.isEmpty(typed)) return null;
+            final SuggestedWords words = mSuggestedWords;
+            return buildFocusedWord(typed, words == null || words.isEmpty() ? null : words, null).toRow();
+        }
+
+        if (mConnection.getExpectedSelectionStart() < 0) return null;
+        final CharSequence before = mConnection.getTextBeforeCursor(64, 0);
+        if (before == null || before.length() == 0) {
+            mFocusedWord = null;
+            return null;
+        }
+        final String s = before.toString();
+        int end = s.length();
+        if (s.charAt(end - 1) == ' ') end--;
+        if (end == 0) {
+            mFocusedWord = null;
+            return null;
+        }
+
+        final int punctuationIndex = indexOfPunctuation(s.charAt(end - 1));
+        if (punctuationIndex >= 0) {
+            if (mFocusedWord == null || !mFocusedWord.isPunctuation
+                    || mFocusedWord.index != punctuationIndex) {
+                final ArrayList<String> candidates = new ArrayList<>();
+                for (final String p : PUNCTUATION_CYCLE) candidates.add(p);
+                mFocusedWord = new FocusedWord(candidates, punctuationIndex, true);
+            }
+            return mFocusedWord.toRow();
+        }
+
+        // If the text still ends with the focused word (as a whole token), keep using it. This
+        // matters for candidates containing characters we would not otherwise treat as part of
+        // a word, e.g. "good-faith".
+        if (mFocusedWord != null && !mFocusedWord.isPunctuation) {
+            final String current = mFocusedWord.current();
+            final int currentStart = end - current.length();
+            if (currentStart >= 0 && s.startsWith(current, currentStart)
+                    && (currentStart == 0
+                        || !settingsValues.isWordCodePoint(s.codePointBefore(currentStart)))) {
+                return mFocusedWord.toRow();
+            }
+        }
+
+        int start = end;
+        while (start > 0) {
+            final int cp = s.codePointBefore(start);
+            if (settingsValues.isWordCodePoint(cp)) {
+                start -= Character.charCount(cp);
+            } else if ((cp == '-' || cp == '\'') && start > 1 && start < end
+                    && settingsValues.isWordCodePoint(s.codePointBefore(start - 1))) {
+                // Hyphens and apostrophes inside a word are part of it.
+                start -= 1;
+            } else {
+                break;
+            }
+        }
+        if (start == end) {
+            mFocusedWord = null;
+            return null;
+        }
+        final String word = s.substring(start, end);
+
+        // The focused word is stale (cursor moved, text edited...). Rebuild it from what we
+        // remember about this word, if anything.
+        final int wordStartInEditor = mConnection.getExpectedSelectionStart() - (s.length() - start);
+        final RememberedSuggestedWords remembered = lookupRememberedEntry(wordStartInEditor + 1, word);
+        if (remembered != null) {
+            final SuggestedWordInfo typedInfo = remembered.suggestions.mTypedWordInfo;
+            final String typed = typedInfo != null ? typedInfo.mWord : remembered.word;
+            mFocusedWord = buildFocusedWord(typed, remembered.suggestions, word);
+        } else {
+            final ArrayList<String> candidates = new ArrayList<>();
+            candidates.add(word);
+            mFocusedWord = new FocusedWord(candidates, 0, false);
+        }
+        return mFocusedWord.toRow();
+    }
+
+    /**
+     * Moves the correction row selection by delta and applies it.
+     * @see #applyCorrectionCandidate(SettingsValues, int)
+     */
+    @Nullable
+    public SuggestedWordInfo cycleCorrectionCandidate(final SettingsValues settingsValues,
+            final int delta) {
+        final CorrectionRow row = computeCorrectionRow(settingsValues);
+        if (row == null) return null;
+        return applyCorrectionCandidate(settingsValues, row.getIndex() + delta);
+    }
+
+    /**
+     * Puts the given candidate of the correction row into the editor.
+     *
+     * If a word is being composed, the replacement has to go through the regular manual-pick
+     * path (so the word gets committed with all its side effects); in that case this returns
+     * the SuggestedWordInfo to pick and does nothing else. Otherwise the word before the cursor
+     * is replaced directly and null is returned.
+     */
+    @Nullable
+    public SuggestedWordInfo applyCorrectionCandidate(final SettingsValues settingsValues,
+            final int newIndex) {
+        final CorrectionRow row = computeCorrectionRow(settingsValues);
+        if (row == null) return null;
+        if (newIndex < 0 || newIndex >= row.getCandidates().size() || newIndex == row.getIndex()) {
+            return null;
+        }
+        final String newWord = row.getCandidates().get(newIndex);
+
+        if (mWordComposer.isComposingWord()) {
+            final SuggestedWords words = mSuggestedWords;
+            if (words != null) {
+                for (final SuggestedWordInfo info : words.mSuggestedWordInfoList) {
+                    if (info.mWord.equals(newWord)) return info;
+                }
+                if (words.mTypedWordInfo != null && words.mTypedWordInfo.mWord.equals(newWord)) {
+                    return words.mTypedWordInfo;
+                }
+            }
+            if (newWord.equals(mWordComposer.getTypedWord())) {
+                return new SuggestedWordInfo(newWord, "", SuggestedWordInfo.MAX_SCORE,
+                        SuggestedWordInfo.KIND_TYPED, Dictionary.DICTIONARY_USER_TYPED,
+                        SuggestedWordInfo.NOT_AN_INDEX, SuggestedWordInfo.NOT_A_CONFIDENCE);
+            }
+            return null;
+        }
+
+        final FocusedWord focused = mFocusedWord;
+        if (focused == null) return null;
+        final String oldWord = focused.current();
+
+        final CharSequence before = mConnection.getTextBeforeCursor(64, 0);
+        if (before == null) return null;
+        final String s = before.toString();
+        final String separator;
+        if (s.endsWith(oldWord)) {
+            separator = "";
+        } else if (s.endsWith(oldWord + " ")) {
+            separator = " ";
+        } else {
+            mFocusedWord = null;
+            return null;
+        }
+        final int oldWordEnd = mConnection.getExpectedSelectionStart() - separator.length();
+
+        mConnection.beginBatchEdit();
+        if (!focused.isPunctuation) {
+            unlearnWord(oldWord, settingsValues, Constants.EVENT_REVERT);
+        }
+        mConnection.deleteTextBeforeCursor(oldWord.length() + separator.length());
+        if (!focused.isPunctuation) {
+            final NgramContext ngramContext = mConnection.getNgramContextFromNthPreviousWord(
+                    settingsValues.mSpacingAndPunctuations, 1);
+            mConnection.commitText(newWord + separator, 1);
+            mDictionaryFacilitator.onWordCommitted(newWord);
+            performAdditionToUserHistoryDictionary(settingsValues, newWord, ngramContext, 1);
+        } else {
+            mConnection.commitText(newWord + separator, 1);
+        }
+        mConnection.endBatchEdit();
+        mConnection.send();
+
+        // Backspace must not try to revert the original autocorrection anymore.
+        mLastComposedWord = LastComposedWord.NOT_A_COMPOSED_WORD;
+        mEnteredText = null;
+        focused.index = newIndex;
+
+        final int delta = newWord.length() - oldWord.length();
+        if (delta != 0) offsetRememberedWords(oldWordEnd, delta);
+
+        postUpdateSuggestionStrip(SuggestedWords.INPUT_STYLE_NONE);
+        return null;
+    }
+
+    /**
+     * Fleksy swipe-left: deletes the word being composed, or the word (or punctuation mark)
+     * before the cursor, together with one trailing space if there is one.
+     */
+    public void fleksyDeleteWord(final SettingsValues settingsValues,
+            final int currentKeyboardScriptId) {
+        mSpaceState = SpaceState.NONE;
+        mEnteredText = null;
+        mFocusedWord = null;
+        final SpacingAndPunctuations spacing = settingsValues.mSpacingAndPunctuations;
+
+        mConnection.beginBatchEdit();
+        if (mConnection.hasSelection()) {
+            mConnection.finishComposingText();
+            mWordComposer.reset(true);
+            mConnection.commitText("", 1);
+        } else {
+            if (!mWordComposer.isComposingWord()
+                    && mConnection.isCursorPrecededByWordCharacter(spacing)
+                    && mConnection.isCursorFollowedByWordCharacter(spacing)) {
+                // Cursor is in the middle of a committed word: compose the whole word so that
+                // all of it gets removed.
+                resetComposingWord(settingsValues, true);
+            }
+
+            if (mWordComposer.isComposingWord()) {
+                final String removedWord = mWordComposer.getTypedWord();
+                mWordComposer.reset(true);
+                if (!TextUtils.isEmpty(removedWord)) {
+                    unlearnWord(removedWord, settingsValues, Constants.EVENT_BACKSPACE);
+                }
+                mConnection.commitText("", 1);
+            } else {
+                final CharSequence before = mConnection.getTextBeforeCursor(48, 0);
+                if (before != null && before.length() > 0) {
+                    final String s = before.toString();
+                    final BreakIterator breakIterator = BreakIterator.getWordInstance();
+                    breakIterator.setText(s);
+                    final int end = breakIterator.last();
+                    int start = breakIterator.previous();
+                    if (start != BreakIterator.DONE && s.substring(start, end).trim().isEmpty()) {
+                        final int previous = breakIterator.previous();
+                        if (previous != BreakIterator.DONE) start = previous;
+                    }
+                    if (start != BreakIterator.DONE && start < end) {
+                        final String deleted = s.substring(start, end).trim();
+                        if (!deleted.isEmpty()
+                                && settingsValues.isWordCodePoint(deleted.codePointAt(0))) {
+                            unlearnWord(deleted, settingsValues, Constants.EVENT_BACKSPACE);
+                        }
+                        mConnection.deleteTextBeforeCursor(end - start);
+                    }
+                }
+            }
+        }
+        mLastComposedWord = LastComposedWord.NOT_A_COMPOSED_WORD;
+        mConnection.endBatchEdit();
+        mConnection.send();
+
+        if (settingsValues.isSuggestionsEnabledPerUserSettings()
+                && spacing.currentLanguageHasSpaces
+                && !mConnection.isCursorFollowedByWordCharacter(spacing)) {
+            restartSuggestionsOnWordTouchedByCursor(settingsValues, null,
+                    false /* forStartInput */, currentKeyboardScriptId);
+        } else {
+            mIme.updateSuggestions(SuggestedWords.INPUT_STYLE_TYPING);
         }
     }
 
@@ -2815,6 +3206,9 @@ public final class InputLogic {
         // strings.
         mLastComposedWord = mWordComposer.commitWord(commitType,
                 chosenWordWithSuggestions, separatorString, ngramContext);
+        mFocusedWord = buildFocusedWord(mLastComposedWord.mTypedWord,
+                suggestedWords == null || suggestedWords.isEmpty() ? null : suggestedWords,
+                chosenWord);
         if (DebugFlags.DEBUG_ENABLED) {
             long runTimeMillis = System.currentTimeMillis() - startTimeMillis;
             Log.d(TAG, "commitChosenWord() : " + runTimeMillis + " ms to run "

@@ -119,6 +119,8 @@ import org.futo.inputmethod.latin.SuggestedWords.SuggestedWordInfo
 import org.futo.inputmethod.latin.SupportsNavbarExtension
 import org.futo.inputmethod.latin.common.Constants
 import org.futo.inputmethod.latin.settings.Settings
+import org.futo.inputmethod.latin.suggestions.CorrectionRow
+
 import org.futo.inputmethod.latin.suggestions.SuggestionStripViewListener
 import org.futo.inputmethod.latin.uix.actions.ActionEditor
 import org.futo.inputmethod.latin.uix.actions.ActionRegistry
@@ -579,6 +581,10 @@ class UixManager(private val latinIME: LatinIME) {
             latinIME.latinIMELegacy.requestForgetWord(word)
         }
 
+        override fun pickCorrectionCandidate(index: Int) {
+            latinIME.latinIMELegacy.pickCorrectionCandidate(index)
+        }
+
         override fun onCodeInput(
             primaryCode: Int,
             x: Int,
@@ -592,6 +598,7 @@ class UixManager(private val latinIME: LatinIME) {
 
     private val shouldShowSuggestionStrip = mutableStateOf(true)
     private val suggestedWords: MutableState<SuggestedWords?> = mutableStateOf(null)
+    private val correctionRow: MutableState<CorrectionRow?> = mutableStateOf(null)
     private val expandableSuggestionCfg: MutableState<ExpandableSuggestionBarConfiguration> = mutableStateOf(
         NonExpandableSuggestionBar
     )
@@ -709,10 +716,16 @@ class UixManager(private val latinIME: LatinIME) {
                 if(!inlineStuffHiddenByTyping.value) inlineSuggestions.value else emptyList()
             }
 
+            // Read directly from Settings: the shared-prefs Compose hook only works inside the
+            // settings activity, which provides a prefs cache.
+            val fleksySwipesEnabled = Settings.getInstance().current?.mFleksySwipesEnabled ?: true
+
             if(actionBarShown.value || inlineSuggestions.isNotEmpty()) {
                 ActionBar(
                     suggestedWordsOrNull,
                     suggestionStripListener,
+                    correctionRow = if(shouldShowSuggestionStrip.value) correctionRow.value else null,
+                    showCorrectionRow = fleksySwipesEnabled,
                     inlineSuggestions = inlineSuggestions,
                     onActionActivated = {
                         keyboardManagerForAction.performHapticAndAudioFeedback(
@@ -1461,6 +1474,10 @@ class UixManager(private val latinIME: LatinIME) {
 
     fun updateVisibility(shouldShowSuggestionsStrip: Boolean, fullscreenMode: Boolean) {
         this.shouldShowSuggestionStrip.value = shouldShowSuggestionsStrip
+    }
+
+    fun setCorrectionRow(row: CorrectionRow?) {
+        this.correctionRow.value = row
     }
 
     fun setSuggestions(suggestedWords: SuggestedWords?, rtlSubtype: Boolean, cfg: ExpandableSuggestionBarConfiguration) {

@@ -222,6 +222,13 @@ val SwipeMenu = UserSettingsMenu(
             title = R.string.swipe_settings_enable_swipe_typing,
             subtitle = R.string.swipe_settings_enable_swipe_typing_subtitle,
             key = Settings.PREF_GESTURE_INPUT,
+            default = {false},
+        ),
+
+        userSettingToggleSharedPrefs(
+            title = R.string.swipe_settings_fleksy_swipes,
+            subtitle = R.string.swipe_settings_fleksy_swipes_subtitle,
+            key = Settings.PREF_FLEKSY_SWIPES,
             default = {true},
         ),
 

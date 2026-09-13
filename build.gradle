@@ -149,6 +149,7 @@ final def translationsWithoutEngValues = { final String path ->
 
 tasks.register('updateLocales', Exec) {
     workingDir = file('tools/make-keyboard-text-py')
+    environment 'PYTHONUTF8', '1'
     commandLine = [
             System.getProperty("os.name").toLowerCase().contains("windows") ? "python" : "python3",
             "src/generate.py"
@@ -157,6 +158,7 @@ tasks.register('updateLocales', Exec) {
 
 tasks.register('updateBundleResources', Exec) {
     workingDir = file('java/res-bundle')
+    environment 'PYTHONUTF8', '1'
     commandLine = [
             System.getProperty("os.name").toLowerCase().contains("windows") ? "python" : "python3",
             "download-bundles.py",

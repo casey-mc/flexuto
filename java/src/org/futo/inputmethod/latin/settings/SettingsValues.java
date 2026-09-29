@@ -597,6 +597,8 @@ public class SettingsValues {
         sb.append("" + mHasKeyboardResize);
         sb.append("\n   mKeyboardHeightScale = ");
         sb.append("" + mKeyboardHeightScale);
+        sb.append("\n   mFleksySwipesEnabled = ");
+        sb.append("" + mFleksySwipesEnabled);
         return sb.toString();
     }
 }

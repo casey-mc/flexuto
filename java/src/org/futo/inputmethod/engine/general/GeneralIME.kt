@@ -47,6 +47,7 @@ import org.futo.inputmethod.latin.uix.EmojiBarContext
 import org.futo.inputmethod.latin.uix.SettingsKey
 import org.futo.inputmethod.latin.uix.actions.throwIfDebug
 import org.futo.inputmethod.latin.uix.getSetting
+import org.futo.inputmethod.latin.uix.issues.IssueRecorder
 import org.futo.inputmethod.latin.uix.isDirectBootUnlocked
 import org.futo.inputmethod.latin.utils.AsyncResultHolder
 import org.futo.inputmethod.latin.xlm.LanguageModelFacilitator
@@ -251,6 +252,10 @@ class GeneralIME(val helper: IMEHelper) : IMEInterface, WordLearner, SuggestionS
             NonExpandableSuggestionBar
         }
 
+        val inputAttributes = settings.current.mInputAttributes
+        IssueRecorder.setSensitiveField(inputAttributes.mIsPasswordField)
+        IssueRecorder.log("input", "started: ${inputAttributes.toString().trim()}")
+
         resetDictionaryFacilitator()
         setNeutralSuggestionStrip()
         dictionaryFacilitator.onStartInput()
@@ -288,6 +293,7 @@ class GeneralIME(val helper: IMEHelper) : IMEInterface, WordLearner, SuggestionS
     }
 
     override fun onFinishInput() {
+        IssueRecorder.log("input", "finished")
         inputLogic.finishInput()
         dictionaryFacilitator.onFinishInput(context)
         updateSuggestionJob?.cancel()
@@ -302,19 +308,77 @@ class GeneralIME(val helper: IMEHelper) : IMEInterface, WordLearner, SuggestionS
         composingSpanStart: Int,
         composingSpanEnd: Int
     ) {
-        inputLogic.onUpdateSelection(
+        val moved = inputLogic.onUpdateSelection(
             oldSelStart, oldSelEnd,
             newSelStart, newSelEnd,
             composingSpanStart, composingSpanEnd,
             Settings.getInstance().current
         )
+        if(moved) {
+            IssueRecorder.log("cursor", "moved $oldSelStart-$oldSelEnd -> $newSelStart-$newSelEnd (not by typing)")
+            IssueRecorder.attachText(issueTextSnapshot())
+        }
     }
 
     override fun isGestureHandlingAvailable(): Boolean =
         dictionaryFacilitator.hasAtLeastOneInitializedMainDictionary()
 
+    private fun describeEventForIssue(event: Event): String? = when(event.eventType) {
+        Event.EVENT_TYPE_INPUT_KEYPRESS,
+        Event.EVENT_TYPE_INPUT_KEYPRESS_RESUMED -> {
+            val code = event.mKeyCode
+            when {
+                code == Constants.CODE_DELETE -> if(event.isKeyRepeat) "backspace (repeat)" else "backspace"
+                code in Constants.CODE_ACTION_0..Constants.CODE_ACTION_MAX -> "action #${code - Constants.CODE_ACTION_0}"
+                code in Constants.CODE_ALT_ACTION_0..Constants.CODE_ALT_ACTION_MAX -> "alt action #${code - Constants.CODE_ALT_ACTION_0}"
+                event.mCodePoint == Constants.CODE_SPACE -> "space"
+                event.mCodePoint == Constants.CODE_ENTER -> "enter"
+                event.mCodePoint > Constants.CODE_SPACE -> "'${String(Character.toChars(event.mCodePoint))}'"
+                else -> Constants.printableCode(code)
+            }
+        }
+        Event.EVENT_TYPE_SOFTWARE_GENERATED_STRING -> "text \"${event.textToCommit}\""
+        Event.EVENT_TYPE_SUGGESTION_PICKED -> event.mSuggestedWordInfo?.let {
+            "picked " + IssueRecorder.describeSuggestion(it)
+        } ?: "picked (null)"
+        Event.EVENT_TYPE_DOWN_UP_KEYEVENT -> "keyevent ${android.view.KeyEvent.keyCodeToString(event.mKeyCode)}"
+        else -> null
+    }
+
+    /** Text before the cursor for issue reports, with the composing word in brackets. */
+    private fun issueTextSnapshot(): String? {
+        if(settings.current.mInputAttributes.mIsPasswordField) return null
+        val committed = inputLogic.mConnection.committedTextBeforeComposingTextForDebug.toString()
+        val composing = inputLogic.mConnection.composingTextForDebug.toString()
+        return committed.takeLast(48) + (if(composing.isEmpty()) "" else "[$composing]") + "|"
+    }
+
+    /** Editor and IME state for an issue report, taken when the issue is captured. */
+    fun issueContext(): String = buildString {
+        val current = settings.current
+        val attributes = current.mInputAttributes
+        appendLine("inputAttributes = ${attributes.toString().trim()}")
+        appendLine("locale = ${current.mLocale}")
+        if(!attributes.mIsPasswordField) {
+            val ic = helper.getCurrentInputConnection()
+            val before = ic?.getTextBeforeCursor(300, 0)
+            val after = ic?.getTextAfterCursor(100, 0)
+            appendLine("text around cursor = \"$before|$after\"")
+        }
+        appendLine("composing = ${inputLogic.mWordComposer.isComposingWord}, typed=\"${inputLogic.mWordComposer.typedWord}\"")
+        appendLine("suggestions = ${IssueRecorder.describeSuggestions(inputLogic.mSuggestedWords, 8)}")
+        val row = if(current.mFleksySwipesEnabled) inputLogic.computeCorrectionRow(current) else null
+        val rowDescription = row?.let { r ->
+            r.candidates.mapIndexed { i, c -> if(i == r.index) "[$c]" else c }.joinToString(" ")
+        }
+        appendLine("correction row = $rowDescription")
+        debugInfo().forEach { appendLine(it) }
+    }
+
     private fun onEventInternal(event: Event, ignoreSuggestionUpdate: Boolean = false) {
         helper.requestCursorUpdate()
+
+        describeEventForIssue(event)?.let { IssueRecorder.log("event", it) }
 
         val cursorBefore = inputLogic.mConnection.mExpectedSelStart
 
@@ -373,6 +437,7 @@ class GeneralIME(val helper: IMEHelper) : IMEInterface, WordLearner, SuggestionS
         }
 
         inputLogic.mConnection.send()
+        IssueRecorder.attachText(issueTextSnapshot())
 
         val cursorAfter = inputLogic.mConnection.mExpectedSelStart
 
@@ -690,6 +755,7 @@ class GeneralIME(val helper: IMEHelper) : IMEInterface, WordLearner, SuggestionS
 
     override fun onUpWithDeletePointerActive() {
         if (inputLogic.mConnection.hasSelection()) {
+            IssueRecorder.log("swipe", "delete-swipe released, deleting selection")
             val selection: CharSequence? = inputLogic.mConnection.getSelectedText(0)
 
             onEventInternal(
@@ -735,6 +801,8 @@ class GeneralIME(val helper: IMEHelper) : IMEInterface, WordLearner, SuggestionS
     }
 
     override fun onUpWithPointerActive() {
+        IssueRecorder.log("swipe", "cursor/delete pointer released")
+        IssueRecorder.attachText(issueTextSnapshot())
         inputLogic.restartSuggestionsOnWordTouchedByCursor(
             settings.current, null,
             false,
@@ -752,9 +820,18 @@ class GeneralIME(val helper: IMEHelper) : IMEInterface, WordLearner, SuggestionS
 
     override fun onFleksySwipe(direction: Int) {
         helper.requestCursorUpdate()
+        IssueRecorder.log("swipe", when(direction) {
+            KeyboardActionListener.FLEKSY_SWIPE_LEFT -> "left (delete word)"
+            KeyboardActionListener.FLEKSY_SWIPE_RIGHT -> "right (space)"
+            KeyboardActionListener.FLEKSY_SWIPE_UP -> "up (previous correction)"
+            KeyboardActionListener.FLEKSY_SWIPE_DOWN -> "down (next correction)"
+            KeyboardActionListener.FLEKSY_SWIPE_SPACE_UP -> "space up (select all)"
+            else -> "direction $direction"
+        })
         when(direction) {
             KeyboardActionListener.FLEKSY_SWIPE_LEFT -> {
                 inputLogic.fleksyDeleteWord(settings.current, helper.currentKeyboardScriptId)
+                IssueRecorder.attachText(issueTextSnapshot())
                 helper.keyboardSwitcher.requestUpdatingShiftState(getCurrentAutoCapsState())
                 refreshCorrectionRow()
             }
@@ -784,6 +861,7 @@ class GeneralIME(val helper: IMEHelper) : IMEInterface, WordLearner, SuggestionS
 
     override fun onCorrectionRowPick(index: Int) {
         helper.requestCursorUpdate()
+        IssueRecorder.log("row", "tapped candidate #$index")
         applyCorrectionPick(inputLogic.applyCorrectionCandidate(settings.current, index))
     }
 
@@ -800,6 +878,7 @@ class GeneralIME(val helper: IMEHelper) : IMEInterface, WordLearner, SuggestionS
         if(info != null) {
             onEventInternal(Event.createSuggestionPickedEvent(info))
         } else {
+            IssueRecorder.attachText(issueTextSnapshot())
             helper.keyboardSwitcher.requestUpdatingShiftState(getCurrentAutoCapsState())
             refreshCorrectionRow()
         }
@@ -817,6 +896,7 @@ class GeneralIME(val helper: IMEHelper) : IMEInterface, WordLearner, SuggestionS
             } else {
                 null
             }
+            IssueRecorder.logCorrectionRow(row?.candidates, row?.index ?: -1)
             helper.showCorrectionRow(row)
             helper.showEmojiBarContext(computeEmojiBarContext())
         }
@@ -879,6 +959,7 @@ class GeneralIME(val helper: IMEHelper) : IMEInterface, WordLearner, SuggestionS
 
     override fun showSuggestionStrip(words: SuggestedWords?) {
         inputLogic.setSuggestedWords(words)
+        IssueRecorder.logSuggestionStrip(words)
 
         if(settings.current.isSuggestionsEnabledPerUserSettings) {
             helper.showSuggestionStrip(words, expandableCfg)

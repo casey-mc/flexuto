@@ -12,6 +12,7 @@
     <string name="action_debug_title">Debug Info</string>
     <string name="action_more_actions_title">All Actions</string>
     <string name="action_bug_viewer_title">Bug Viewer</string>
+    <string name="action_report_issue_title">Report Issue</string>
     <!-- These move the text cursor up, down, left, right -->
     <string name="action_cursor_up_title">Arrow Up</string>
     <string name="action_cursor_down_title">Arrow Down</string>

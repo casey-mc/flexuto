@@ -1,0 +1,117 @@
+name: Build APK
+
+# Builds the same APK as `deploy-phone.bat build` (unstable debug, signed with
+# java/shared.keystore) on every push and publishes it as a GitHub release, so it can
+# be installed on top of a locally built copy.
+#
+# Newest build, from any branch:
+#   https://github.com/<owner>/<repo>/releases/latest/download/flexuto.apk
+
+on:
+  push:
+    branches: ['**']
+    paths-ignore:
+      - '**.md'
+      - '.gitlab-ci.yml'
+      - 'deploy-phone.bat'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # How many builds to keep on the releases page
+  RELEASES_TO_KEEP: 15
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost /usr/local/lib/node_modules "$AGENT_TOOLSDIRECTORY/CodeQL"
+          df -h /
+
+      - uses: actions/checkout@v4
+        with:
+          # Full history: the version code is the commit count
+          fetch-depth: 0
+
+      - name: Check out submodules
+        run: |
+          git lfs install
+          git submodule sync --recursive
+          git submodule update --init --recursive
+          git submodule foreach --recursive 'git lfs pull || true'
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Install NDK
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;28.2.13676358" > /dev/null
+
+      - name: Compute version
+        id: version
+        run: |
+          branch="${GITHUB_REF_NAME}"
+          count="$(git rev-list --first-parent --count HEAD)"
+          sha="$(git rev-parse --short HEAD)"
+          safe_branch="$(echo "$branch" | tr -c 'A-Za-z0-9._-' '-' | sed 's/-*$//')"
+          echo "VERSION_CODE=$count" >> "$GITHUB_ENV"
+          echo "VERSION_NAME=$count-$safe_branch-$sha" >> "$GITHUB_ENV"
+          echo "BRANCH_NAME=$branch" >> "$GITHUB_ENV"
+          echo "tag=build-$count-$safe_branch-$sha" >> "$GITHUB_OUTPUT"
+          echo "name=Build $count · $branch · $sha" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        run: ./gradlew assembleUnstableDebug --stacktrace --console=plain
+
+      - name: Collect APK
+        run: |
+          apk="$(find build/outputs/apk/unstable/debug -name '*.apk' | head -n 1)"
+          test -n "$apk" || { echo "No APK produced"; exit 1; }
+          cp "$apk" flexuto.apk
+          ls -lh flexuto.apk
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          NAME: ${{ steps.version.outputs.name }}
+        run: |
+          notes="$(git log -1 --format='%s%n%n%b' | sed '/^Co-Authored-By:/d;/^Claude-Session:/d')"
+          gh release create "$TAG" flexuto.apk \
+            --target "$GITHUB_SHA" \
+            --title "$NAME" \
+            --notes "Branch \`$GITHUB_REF_NAME\`, commit $GITHUB_SHA
+
+          $notes" \
+            --latest
+
+      - name: Delete old releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release list --limit 200 --json tagName,createdAt \
+            --jq "sort_by(.createdAt) | reverse | .[${RELEASES_TO_KEEP}:] | .[].tagName" \
+            | grep '^build-' \
+            | while read -r tag; do
+                gh release delete "$tag" --yes --cleanup-tag
+              done || true
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-reports
+          path: build/reports
+          if-no-files-found: ignore

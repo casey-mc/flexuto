@@ -59,6 +59,7 @@ import org.futo.inputmethod.latin.uix.actions.BugViewerKt;
 import org.futo.inputmethod.latin.utils.InputTypeUtils;
 import org.futo.inputmethod.latin.utils.RecapitalizeStatus;
 import org.futo.inputmethod.latin.utils.StatsUtils;
+import org.futo.inputmethod.latin.uix.issues.IssueRecorder;
 import org.futo.inputmethod.latin.utils.TextRange;
 
 import java.text.BreakIterator;
@@ -434,6 +435,7 @@ public final class InputLogic {
             return null;
         }
         final int oldWordEnd = mConnection.getExpectedSelectionStart() - separator.length();
+        IssueRecorder.log("row", "replace \"" + oldWord + "\" -> \"" + newWord + "\"");
 
         mConnection.beginBatchEdit();
         if (!focused.isPunctuation) {
@@ -491,6 +493,7 @@ public final class InputLogic {
 
             if (mWordComposer.isComposingWord()) {
                 final String removedWord = mWordComposer.getTypedWord();
+                IssueRecorder.log("delete", "composing word \"" + removedWord + "\"");
                 mWordComposer.reset(true);
                 if (!TextUtils.isEmpty(removedWord)) {
                     unlearnWord(removedWord, settingsValues, Constants.EVENT_BACKSPACE);
@@ -510,6 +513,7 @@ public final class InputLogic {
                     }
                     if (start != BreakIterator.DONE && start < end) {
                         final String deleted = s.substring(start, end).trim();
+                        IssueRecorder.log("delete", "\"" + s.substring(start, end) + "\"");
                         if (!deleted.isEmpty()
                                 && settingsValues.isWordCodePoint(deleted.codePointAt(0))) {
                             unlearnWord(deleted, settingsValues, Constants.EVENT_BACKSPACE);
@@ -2143,6 +2147,7 @@ public final class InputLogic {
         }
         final boolean isWritingSchema = event.mCodePoint == '/'
                 && mConnection.isPotentiallyWritingSchema();
+        IssueRecorder.log("auto", "swap space and \"" + event.getTextToCommit() + "\"");
         mConnection.deleteTextBeforeCursor(1);
 
         boolean stripSpace = inputTransaction.mSettingsValues.mInputAttributes.mIsUriField || isWritingSchema;
@@ -2319,6 +2324,7 @@ public final class InputLogic {
                 Character.isSurrogatePair(lastTwo.charAt(0), lastTwo.charAt(1)) ?
                         Character.codePointAt(lastTwo, length - 3) : lastTwo.charAt(length - 2);
         if (canBeFollowedByDoubleSpacePeriod(firstCodePoint)) {
+            IssueRecorder.log("auto", "double space -> period");
             cancelDoubleSpacePeriodCountdown();
             mConnection.deleteTextBeforeCursor(1);
             final String textToInsert = inputTransaction.mSettingsValues.mSpacingAndPunctuations
@@ -2614,6 +2620,8 @@ public final class InputLogic {
                         + "\", but before the cursor we found \"" + wordBeforeCursor + "\"");
             }
         }
+        IssueRecorder.log("revert", "undo autocorrect \"" + committedWordString + "\" -> \""
+                + originallyTypedWordString + "\"");
         mConnection.deleteTextBeforeCursor(deleteLength);
         if (!TextUtils.isEmpty(committedWord)) {
             unlearnWord(committedWordString, inputTransaction.mSettingsValues,
@@ -3206,6 +3214,8 @@ public final class InputLogic {
         // strings.
         mLastComposedWord = mWordComposer.commitWord(commitType,
                 chosenWordWithSuggestions, separatorString, ngramContext);
+        IssueRecorder.log("commit", describeCommitForIssue(commitType,
+                mLastComposedWord.mTypedWord, chosenWord, separatorString, suggestedWords));
         mFocusedWord = buildFocusedWord(mLastComposedWord.mTypedWord,
                 suggestedWords == null || suggestedWords.isEmpty() ? null : suggestedWords,
                 chosenWord);
@@ -3215,6 +3225,27 @@ public final class InputLogic {
                     + "WordComposer.commitWord()");
             startTimeMillis = System.currentTimeMillis();
         }
+    }
+
+    private static String describeCommitForIssue(final int commitType, final String typedWord,
+            final String chosenWord, final String separatorString,
+            final SuggestedWords suggestedWords) {
+        final String type;
+        switch (commitType) {
+            case LastComposedWord.COMMIT_TYPE_USER_TYPED_WORD: type = "as typed"; break;
+            case LastComposedWord.COMMIT_TYPE_MANUAL_PICK: type = "manual pick"; break;
+            case LastComposedWord.COMMIT_TYPE_DECIDED_WORD:
+                type = TextUtils.equals(typedWord, chosenWord) ? "decided (no correction)"
+                        : "AUTOCORRECT";
+                break;
+            case LastComposedWord.COMMIT_TYPE_CANCEL_AUTO_CORRECT: type = "cancel autocorrect"; break;
+            default: type = "type " + commitType;
+        }
+        final String separator = TextUtils.isEmpty(separatorString)
+                ? "none" : "\"" + separatorString.replace("\n", "\\n") + "\"";
+        return type + ": typed \"" + typedWord + "\" -> \"" + chosenWord + "\", separator "
+                + separator + "; candidates: "
+                + IssueRecorder.describeSuggestions(suggestedWords, 5);
     }
 
     /**
